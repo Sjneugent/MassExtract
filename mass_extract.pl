@@ -52,7 +52,7 @@ my $log_fh;
 if ($log_file) {
     $log_file = glob($log_file) if $log_file =~ /^~/;
     open($log_fh, '>>', $log_file) or die "Error: Cannot open log file '$log_file': $!\n";
-    if (-z $log_file || !-s $log_file) {
+    if (!-s $log_file) {
         print $log_fh "Timestamp,Source Directory,RAR File,Output Directory,Action,Status,Details\n";
     }
 }
@@ -75,6 +75,13 @@ Examples:
   mass_extract.pl -r ~/downloads -o ~/movies -d -l extraction.log
 
 USAGE
+}
+
+# Shell-escape a string by replacing single quotes with '\'' and wrapping in single quotes
+sub shell_escape {
+    my ($str) = @_;
+    $str =~ s/'/'\\''/g;
+    return "'$str'";
 }
 
 sub log_entry {
@@ -158,7 +165,8 @@ sub get_part_files {
 sub verify_extraction_crc {
     my ($rar_path) = @_;
     
-    my $output = `unrar t '$rar_path' 2>&1`;
+    my $escaped_path = shell_escape($rar_path);
+    my $output = `unrar t $escaped_path 2>&1`;
     my $exit_code = $? >> 8;
     
     # Handle both standard unrar ("All OK") and unrar-free (exit code 0 without errors)
@@ -226,7 +234,9 @@ sub extract_rar {
         };
     }
 
-    my $exit_code = system("unrar x -o+ '$full_rar_path' '$dest_dir/' > /dev/null 2>&1");
+    my $escaped_rar_path = shell_escape($full_rar_path);
+    my $escaped_dest_dir = shell_escape("$dest_dir/");
+    my $exit_code = system("unrar x -o+ $escaped_rar_path $escaped_dest_dir > /dev/null 2>&1");
 
     if ($exit_code == 0) {
         log_entry($dir, $rar_file, $dest_dir, 'extract', 'success', '');
