@@ -7,26 +7,64 @@ use File::Path qw(make_path);
 use Cwd 'abs_path';
 use Getopt::Long;
 use POSIX qw(strftime);
-
+use Tk;
 my $root_dir = '';
 my $output_dir = '';
 my $delete_after = 0;
 my $log_file = '';
 my $help = 0;
-
+my $gui = 0;
 GetOptions(
     'root|r=s'    => \$root_dir,
     'output|o=s'  => \$output_dir,
     'delete|d'    => \$delete_after,
     'log|l=s'     => \$log_file,
     'help|h'      => \$help,
+    'gui|g'       => \$gui,
 ) or die "Error in command line arguments. Use --help for usage.\n";
 
 if ($help) {
     print_usage();
     exit 0;
 }
-
+if($gui){
+  my $MW = MainWindow->new;
+  $MW->title("Mass RAR Extractor Options");
+  $MW->Label(-text => "Select Root Directory:")->pack();
+  my $root_entry = $MW->Entry(-width => 50);
+  $root_entry->pack();
+  $MW->Button(-text => "Browse", -command => sub {
+      my $dir = $MW->chooseDirectory(-title => "Select Root Directory");
+      $root_entry->delete(0, 'end');
+      $root_entry->insert(0, $dir) if defined $dir;
+  })->pack();
+  $MW->Label(-text => "Select Output Directory (optional):")->pack();
+  my $output_entry = $MW->Entry(-width => 50);
+  $output_entry->pack();
+  $MW->Button(-text => "Browse", -command => sub {
+      my $dir = $MW->chooseDirectory(-title => "Select Output Directory");
+      $output_entry->delete(0, 'end');
+      $output_entry->insert(0, $dir) if defined $dir;
+  })->pack();
+  my $delete_var = 0;
+  $MW->Checkbutton(-text => "Delete RAR files after extraction", -variable => \$delete_var)->pack();
+  my $log_entry = $MW->Entry(-width => 50);
+  $MW->Label(-text => "Log File (optional):")->pack();       
+  $MW->Button(-text => "Browse", -command => sub {
+      my $file = $MW->getSaveFile(-title => "Select Log File", -defaultextension => '.csv', -filetypes => [['CSV Files', '.csv'], ['All Files', '.*']]);
+      $log_entry->delete(0, 'end');
+      $log_entry->insert(0, $file) if defined $file;
+  })->pack();
+  $log_entry->pack();
+  $MW->Button(-text => "Start Extraction", -command => sub {
+      $root_dir = $root_entry->get();
+      $output_dir = $output_entry->get();
+      $delete_after = $delete_var;
+      $log_file = $log_entry->get();
+      $MW->destroy();
+  })->pack(); 
+  MainLoop;
+}
 unless ($root_dir) {
     print STDERR "Error: Root directory is required. Use -r or --root to specify.\n";
     print_usage();
@@ -67,13 +105,13 @@ Options:
   -d, --delete        Delete RAR files after successful extraction and CRC verification
   -l, --log <file>    Write extraction log to CSV file
   -h, --help          Show this help message
-
+  -g, --gui           Launch GUI for selecting options
 Examples:
   mass_extract.pl -r ~/downloads
   mass_extract.pl -r ~/downloads -o ~/movies
   mass_extract.pl -r ~/downloads -o ~/movies -d
   mass_extract.pl -r ~/downloads -o ~/movies -d -l extraction.log
-
+  mass_extract.pl -g # Launch GUI
 USAGE
 }
 
