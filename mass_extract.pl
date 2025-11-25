@@ -21,6 +21,7 @@ my $progress_window;
 my $progress_bar;
 my $progress_label;
 my $output_text;
+my $close_button;
 my $progress_value = 0;
 my $total_dirs = 0;
 my $current_dir_index = 0;
@@ -168,14 +169,11 @@ sub create_progress_window {
     )->pack(-fill => 'both', -expand => 1);
     
     # Close button (disabled until extraction is complete)
-    my $close_button = $progress_window->Button(
+    $close_button = $progress_window->Button(
         -text => "Close",
         -state => 'disabled',
         -command => sub { $progress_window->destroy(); }
     )->pack(-pady => 10);
-    
-    # Store close button reference for later enabling
-    $progress_window->{'close_button'} = $close_button;
     
     $progress_window->update();
 }
@@ -212,9 +210,8 @@ sub append_output {
 
 # Enable the close button when extraction is complete
 sub enable_close_button {
-    return unless $gui && $progress_window;
-    my $close_button = $progress_window->{'close_button'};
-    $close_button->configure(-state => 'normal') if $close_button;
+    return unless $gui && $progress_window && $close_button;
+    $close_button->configure(-state => 'normal');
     $progress_window->update();
 }
 
@@ -243,7 +240,12 @@ sub iterate_movies {
         elsif (/\.r\d{2}$/i) { $part_counts{$File::Find::dir}++ }
     }, $search_dir);
 
-    foreach my $dir (keys %rar_counts, keys %part_counts) {
+    # Combine keys from both hashes, ensuring uniqueness
+    my %all_dirs;
+    $all_dirs{$_} = 1 for keys %rar_counts;
+    $all_dirs{$_} = 1 for keys %part_counts;
+    
+    foreach my $dir (keys %all_dirs) {
         my $rar_count = $rar_counts{$dir} // 0;
         my $part_count = $part_counts{$dir} // 0;
 
@@ -338,10 +340,16 @@ sub delete_rar_files {
 }
 
 # Run unrar command with realtime output capture
+# Takes raw (unescaped) paths and handles escaping internally
 sub run_unrar_with_output {
-    my ($escaped_rar_path, $escaped_dest_dir) = @_;
+    my ($rar_path, $dest_dir) = @_;
     
-    my $cmd = "unrar x -o+ $escaped_rar_path $escaped_dest_dir 2>&1";
+    # Shell-escape paths for safe command execution
+    my $escaped_rar = shell_escape($rar_path);
+    my $escaped_dest = shell_escape($dest_dir);
+    
+    # Build command with properly escaped paths
+    my $cmd = "unrar x -o+ $escaped_rar $escaped_dest 2>&1";
     
     # Open pipe to read unrar output in realtime
     my $pid = open(my $unrar_fh, '-|', $cmd);
@@ -418,11 +426,8 @@ sub extract_rar {
         };
     }
 
-    my $escaped_rar_path = shell_escape($full_rar_path);
-    my $escaped_dest_dir = shell_escape("$dest_dir/");
-    
-    # Run unrar with realtime output capture
-    my $exit_code = run_unrar_with_output($escaped_rar_path, $escaped_dest_dir);
+    # Run unrar with realtime output capture (paths are escaped inside the function)
+    my $exit_code = run_unrar_with_output($full_rar_path, "$dest_dir/");
 
     if ($exit_code == 0) {
         log_entry($dir, $rar_file, $dest_dir, 'extract', 'success', '');
@@ -462,11 +467,19 @@ if (@dirs == 0) {
     print "No RAR archives found in '$root_dir'\n";
     log_entry($root_dir, '', '', 'scan', 'complete', 'No archives found');
     if ($gui) {
-        # Show message dialog in GUI mode
+        # Show message dialog in GUI mode using a simple window
         my $msg_win = MainWindow->new;
-        $msg_win->title("Mass RAR Extractor");
-        $msg_win->Label(-text => "No RAR archives found in '$root_dir'")->pack(-padx => 20, -pady => 10);
-        $msg_win->Button(-text => "OK", -command => sub { $msg_win->destroy(); })->pack(-pady => 10);
+        $msg_win->title("Mass RAR Extractor - Complete");
+        $msg_win->Label(
+            -text => "No RAR archives found in:\n$root_dir",
+            -justify => 'center'
+        )->pack(-padx => 20, -pady => 15);
+        $msg_win->Button(
+            -text => "OK",
+            -width => 10,
+            -command => sub { $msg_win->destroy(); }
+        )->pack(-pady => 10);
+        $msg_win->update();
         MainLoop;
     }
 } else {
