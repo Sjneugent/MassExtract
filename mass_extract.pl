@@ -8,12 +8,22 @@ use Cwd 'abs_path';
 use Getopt::Long;
 use POSIX qw(strftime);
 use Tk;
+use Tk::ProgressBar;
 my $root_dir = '';
 my $output_dir = '';
 my $delete_after = 0;
 my $log_file = '';
 my $help = 0;
 my $gui = 0;
+
+# GUI progress window variables
+my $progress_window;
+my $progress_bar;
+my $progress_label;
+my $output_text;
+my $progress_value = 0;
+my $total_dirs = 0;
+my $current_dir_index = 0;
 GetOptions(
     'root|r=s'    => \$root_dir,
     'output|o=s'  => \$output_dir,
@@ -120,6 +130,92 @@ sub shell_escape {
     my ($str) = @_;
     $str =~ s/'/'\\''/g;
     return "'$str'";
+}
+
+# Create and show the progress window for GUI mode
+sub create_progress_window {
+    $progress_window = MainWindow->new;
+    $progress_window->title("Mass RAR Extractor - Progress");
+    $progress_window->geometry("700x500");
+    
+    # Progress label showing current file
+    $progress_label = $progress_window->Label(
+        -text => "Initializing...",
+        -font => [-size => 10, -weight => 'bold']
+    )->pack(-pady => 10, -padx => 10, -fill => 'x');
+    
+    # Progress bar
+    $progress_bar = $progress_window->ProgressBar(
+        -width => 30,
+        -length => 650,
+        -from => 0,
+        -to => 100,
+        -variable => \$progress_value,
+        -colors => [0, 'blue']
+    )->pack(-pady => 10, -padx => 10);
+    
+    # Scrolled text widget for realtime output
+    my $output_frame = $progress_window->Frame()->pack(-fill => 'both', -expand => 1, -padx => 10, -pady => 5);
+    $output_frame->Label(-text => "Extraction Output:")->pack(-anchor => 'w');
+    
+    $output_text = $output_frame->Scrolled('Text',
+        -scrollbars => 'e',
+        -height => 20,
+        -width => 80,
+        -font => ['Courier', 9],
+        -state => 'normal',
+        -wrap => 'word'
+    )->pack(-fill => 'both', -expand => 1);
+    
+    # Close button (disabled until extraction is complete)
+    my $close_button = $progress_window->Button(
+        -text => "Close",
+        -state => 'disabled',
+        -command => sub { $progress_window->destroy(); }
+    )->pack(-pady => 10);
+    
+    # Store close button reference for later enabling
+    $progress_window->{'close_button'} = $close_button;
+    
+    $progress_window->update();
+}
+
+# Update progress window with current status
+sub update_progress {
+    my ($message, $percent) = @_;
+    return unless $gui && $progress_window;
+    
+    if (defined $message) {
+        $progress_label->configure(-text => $message);
+    }
+    
+    if (defined $percent) {
+        $progress_value = $percent;
+    }
+    
+    $progress_window->update();
+}
+
+# Append text to the output window
+sub append_output {
+    my ($text) = @_;
+    
+    if ($gui && $output_text) {
+        $output_text->insert('end', $text);
+        $output_text->see('end');
+        $progress_window->update();
+    }
+    
+    # Also print to console
+    print $text;
+}
+
+# Enable the close button when extraction is complete
+sub enable_close_button {
+    return unless $gui && $progress_window;
+    my $close_button = $progress_window->{'close_button'};
+    $close_button->configure(-state => 'normal') if $close_button;
+    $progress_window->update();
 }
 
 sub log_entry {
@@ -241,12 +337,56 @@ sub delete_rar_files {
     return @deleted;
 }
 
+# Run unrar command with realtime output capture
+sub run_unrar_with_output {
+    my ($escaped_rar_path, $escaped_dest_dir) = @_;
+    
+    my $cmd = "unrar x -o+ $escaped_rar_path $escaped_dest_dir 2>&1";
+    
+    # Open pipe to read unrar output in realtime
+    my $pid = open(my $unrar_fh, '-|', $cmd);
+    
+    if (!defined $pid) {
+        append_output("Failed to execute unrar: $!\n");
+        return -1;
+    }
+    
+    # Read output line by line and display in realtime
+    while (my $line = <$unrar_fh>) {
+        append_output($line);
+        
+        # Parse progress percentage from unrar output if available
+        # unrar shows progress like "...         5%"
+        if ($line =~ /(\d+)%/) {
+            my $file_percent = $1;
+            # Calculate overall progress based on current directory and file progress
+            if ($total_dirs > 0) {
+                my $dir_progress = ($current_dir_index / $total_dirs) * 100;
+                my $file_contribution = ($file_percent / $total_dirs);
+                update_progress(undef, $dir_progress + $file_contribution);
+            }
+        }
+        
+        # Keep GUI responsive during extraction
+        if ($gui && $progress_window) {
+            $progress_window->update();
+        }
+    }
+    
+    close($unrar_fh);
+    my $exit_code = $? >> 8;
+    
+    return $exit_code;
+}
+
 sub extract_rar { 
     my ($dir, $dest_dir) = @_;
     $dest_dir //= $dir;
     
     unless (-d $dir) {
-        warn "Directory '$dir' does not exist or is not a directory.\n";
+        my $msg = "Directory '$dir' does not exist or is not a directory.\n";
+        append_output($msg);
+        warn $msg unless $gui;
         log_entry($dir, '', $dest_dir, 'extract', 'failed', 'Source directory does not exist');
         return 0;
     }
@@ -254,11 +394,15 @@ sub extract_rar {
     my @rar_files = get_rar_files($dir);
 
     if (@rar_files == 0) {
-        warn "No .rar file found in '$dir'.\n";
+        my $msg = "No .rar file found in '$dir'.\n";
+        append_output($msg);
+        warn $msg unless $gui;
         log_entry($dir, '', $dest_dir, 'extract', 'failed', 'No RAR file found');
         return 0;
     } elsif (@rar_files > 1) {
-        warn "Multiple .rar files found in '$dir'. Using the first one: $rar_files[0]\n";
+        my $msg = "Multiple .rar files found in '$dir'. Using the first one: $rar_files[0]\n";
+        append_output($msg);
+        warn $msg unless $gui;
     }
 
     my $rar_file = $rar_files[0];
@@ -266,7 +410,9 @@ sub extract_rar {
 
     unless (-d $dest_dir) {
         make_path($dest_dir) or do {
-            warn "Cannot create destination directory '$dest_dir': $!\n";
+            my $msg = "Cannot create destination directory '$dest_dir': $!\n";
+            append_output($msg);
+            warn $msg unless $gui;
             log_entry($dir, $rar_file, $dest_dir, 'extract', 'failed', "Cannot create destination: $!");
             return 0;
         };
@@ -274,31 +420,37 @@ sub extract_rar {
 
     my $escaped_rar_path = shell_escape($full_rar_path);
     my $escaped_dest_dir = shell_escape("$dest_dir/");
-    my $exit_code = system("unrar x -o+ $escaped_rar_path $escaped_dest_dir > /dev/null 2>&1");
+    
+    # Run unrar with realtime output capture
+    my $exit_code = run_unrar_with_output($escaped_rar_path, $escaped_dest_dir);
 
     if ($exit_code == 0) {
         log_entry($dir, $rar_file, $dest_dir, 'extract', 'success', '');
         
         if ($delete_after) {
-            print "Verifying CRC for '$full_rar_path'...\n";
+            append_output("Verifying CRC for '$full_rar_path'...\n");
             if (verify_extraction_crc($full_rar_path)) {
                 log_entry($dir, $rar_file, $dest_dir, 'verify', 'success', 'CRC check passed');
-                print "CRC verification passed. Deleting RAR files...\n";
+                append_output("CRC verification passed. Deleting RAR files...\n");
                 my @deleted = delete_rar_files($dir);
                 if (@deleted) {
                     my $deleted_list = join(', ', @deleted);
                     log_entry($dir, $rar_file, $dest_dir, 'delete', 'success', "Deleted: $deleted_list");
-                    print "Deleted " . scalar(@deleted) . " archive file(s) from '$dir'\n";
+                    append_output("Deleted " . scalar(@deleted) . " archive file(s) from '$dir'\n");
                 }
             } else {
-                warn "CRC verification failed for '$full_rar_path'. RAR files will not be deleted.\n";
+                my $msg = "CRC verification failed for '$full_rar_path'. RAR files will not be deleted.\n";
+                append_output($msg);
+                warn $msg unless $gui;
                 log_entry($dir, $rar_file, $dest_dir, 'verify', 'failed', 'CRC check failed - files not deleted');
             }
         }
         
         return 1;
     } else {
-        warn "unrar command failed with exit code $exit_code for '$full_rar_path'.\n";
+        my $msg = "unrar command failed with exit code $exit_code for '$full_rar_path'.\n";
+        append_output($msg);
+        warn $msg unless $gui;
         log_entry($dir, $rar_file, $dest_dir, 'extract', 'failed', "unrar exit code: $exit_code");
         return 0;
     }
@@ -309,9 +461,24 @@ my @dirs = iterate_movies($root_dir);
 if (@dirs == 0) {
     print "No RAR archives found in '$root_dir'\n";
     log_entry($root_dir, '', '', 'scan', 'complete', 'No archives found');
+    if ($gui) {
+        # Show message dialog in GUI mode
+        my $msg_win = MainWindow->new;
+        $msg_win->title("Mass RAR Extractor");
+        $msg_win->Label(-text => "No RAR archives found in '$root_dir'")->pack(-padx => 20, -pady => 10);
+        $msg_win->Button(-text => "OK", -command => sub { $msg_win->destroy(); })->pack(-pady => 10);
+        MainLoop;
+    }
 } else {
-    print "Found " . scalar(@dirs) . " directories with RAR archives.\n";
+    $total_dirs = scalar(@dirs);
+    append_output("Found $total_dirs directories with RAR archives.\n");
     
+    # Create progress window for GUI mode
+    if ($gui) {
+        create_progress_window();
+    }
+    
+    $current_dir_index = 0;
     foreach my $source_dir (@dirs) {
         my $dest_dir;
         
@@ -323,18 +490,33 @@ if (@dirs == 0) {
             $dest_dir = $source_dir;
         }
         
-        print "\nProcessing: $source_dir\n";
-        print "  -> Extracting to: $dest_dir\n";
+        # Update progress bar
+        my $percent = ($current_dir_index / $total_dirs) * 100;
+        update_progress("Processing ($current_dir_index/$total_dirs): " . basename($source_dir), $percent);
+        
+        append_output("\nProcessing: $source_dir\n");
+        append_output("  -> Extracting to: $dest_dir\n");
         
         if (extract_rar($source_dir, $dest_dir)) {
-            print "  -> Extraction SUCCESS\n";
+            append_output("  -> Extraction SUCCESS\n");
         } else {
-            print "  -> Extraction FAILED\n";
+            append_output("  -> Extraction FAILED\n");
         }
+        
+        $current_dir_index++;
+    }
+    
+    # Update progress to 100% when complete
+    update_progress("Extraction complete!", 100);
+    
+    # Enable close button and wait for user to close the window
+    if ($gui && $progress_window) {
+        enable_close_button();
+        MainLoop;
     }
 }
 
 if ($log_fh) {
     close($log_fh);
-    print "\nLog written to: $log_file\n";
+    append_output("\nLog written to: $log_file\n");
 }

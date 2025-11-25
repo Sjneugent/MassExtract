@@ -17,6 +17,7 @@ mass_extract.pl [OPTIONS]
 | `-d, --delete` | Delete RAR files after successful extraction and CRC verification |
 | `-l, --log <file>` | Write extraction log to CSV file |
 | `-h, --help` | Show help message |
+| `-g, --gui` | Launch GUI for selecting options |
 
 ## Examples
 
@@ -39,6 +40,29 @@ Extract with logging:
 ```bash
 ./mass_extract.pl -r ~/downloads -o ~/movies -d -l extraction.log
 ```
+
+Launch GUI mode:
+```bash
+./mass_extract.pl -g
+```
+
+## GUI Mode
+
+When launched with the `-g` option, the script provides a graphical user interface:
+
+1. **Options Window**: First, a window appears allowing you to:
+   - Browse and select the root directory
+   - Browse and select an output directory (optional)
+   - Enable deletion of RAR files after extraction
+   - Select a log file location (optional)
+
+2. **Progress Window**: During extraction, a progress window displays:
+   - A progress bar showing overall extraction progress
+   - Current directory being processed
+   - Real-time output from the unrar command
+   - Extraction status messages
+
+The progress window keeps you informed about which archives are being extracted and shows the actual unrar command output as it happens.
 
 ## Log Format
 
@@ -68,12 +92,14 @@ Output: ~/output/movies/action/movie1/extracted_files
 
 ## Requirements
 
-- Perl 5 with the following modules (included in core):
-  - File::Find
-  - File::Copy
-  - File::Basename
-  - File::Path
-  - Cwd
-  - Getopt::Long
-  - POSIX
+- Perl 5 with the following modules:
+  - File::Find (core)
+  - File::Copy (core)
+  - File::Basename (core)
+  - File::Path (core)
+  - Cwd (core)
+  - Getopt::Long (core)
+  - POSIX (core)
+  - Tk (for GUI mode)
+  - Tk::ProgressBar (for GUI mode)
 - `unrar` command-line tool
