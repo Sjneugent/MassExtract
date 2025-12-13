@@ -327,6 +327,7 @@ unless (-d $root_dir) {
 
 # If output directory specified, validate and create if needed
 if ($output_dir) {
+    print "Line 330 => $output_dir\n";
     $output_dir = glob($output_dir) if $output_dir =~ /^~/;
     $output_dir = abs_path($output_dir);
     unless (-d $output_dir) {
@@ -346,6 +347,106 @@ if ($log_file) {
     if (!-s $log_file) {
         print $log_fh "Timestamp,Source Directory,RAR File,Output Directory,Action,Status,Details\n";
     }
+}
+
+#=============================================================================
+# MAIN PROGRAM EXECUTION
+#=============================================================================
+
+# Scan for directories containing split RAR archives
+my @dirs = iterate_movies($root_dir);
+
+if (@dirs == 0) {
+    # No archives found - inform user and exit
+    print "No RAR archives found in '$root_dir'\n";
+    log_entry($root_dir, '', '', 'scan', 'complete', 'No archives found');
+    
+    if ($gui) {
+        # Show message dialog in GUI mode
+        my $msg_win = MainWindow->new;
+        $msg_win->title("Mass RAR Extractor - Complete");
+        $msg_win->Label(
+            -text => "No RAR archives found in:\n$root_dir",
+            -justify => 'center'
+        )->pack(-padx => 20, -pady => 15);
+        $msg_win->Button(
+            -text => "OK",
+            -width => 10,
+            -command => sub { $msg_win->destroy(); }
+        )->pack(-pady => 10);
+        $msg_win->update();
+        MainLoop;
+    }
+} else {
+
+    # Archives found - process each directory
+    $total_dirs = scalar(@dirs);
+    append_output("Found $total_dirs directories with RAR archives.\n");
+    
+    # Create progress window for GUI mode
+    if ($gui) {
+        create_progress_window();
+    }
+    
+    # Process each directory containing archives
+    $current_dir_index = 0;
+    foreach my $source_dir (@dirs) {
+        my $dest_dir;
+        
+        # Determine destination directory
+        # If output_dir specified, preserve relative path structure
+        if ($output_dir) {
+            print "Line 1091 source_dir=$source_dir\troot_dir=$root_dir\toutput_dir=$output_dir\n";
+            # Use File::Spec or manual path computation to get relative path
+            my $relative = $source_dir;
+            # Ensure root_dir ends without trailing slash for consistent matching
+            my $root_normalized = $root_dir;
+            $root_normalized =~ s/\/$//;
+            $relative =~ s/^\Q$root_normalized\E\/?//;  # Remove root prefix
+            print "$relative\n";
+            $dest_dir = $relative ? "$output_dir/$relative" : $output_dir;
+            print "new dest_dir=$dest_dir\trelative=$relative\t$output_dir/$relative\n";
+        } else {
+            # Extract in place
+            $dest_dir = $source_dir;
+        }
+        # Update progress bar with current directory info
+        my $percent = ($current_dir_index / $total_dirs) * 100;
+        update_progress("Processing ($current_dir_index/$total_dirs): " . basename($source_dir), $percent);
+        
+        append_output("\nProcessing: $source_dir\n");
+        append_output("  -> Extracting to: $dest_dir\n");
+        
+        # Perform extraction and report result
+        print "1108 extract_rar($source_dir, $dest_dir)\n";
+        if (extract_rar($source_dir, $dest_dir)) {
+            append_output("  -> Extraction SUCCESS\n");
+        } else {
+            append_output("  -> Extraction FAILED\n");
+        }
+        
+        $current_dir_index++;
+        
+    }
+    
+    # Update progress to 100% when complete
+    update_progress("Extraction complete!", 100);
+    
+    # Enable close button and wait for user to close the window
+    if ($gui && $progress_window) {
+        enable_close_button();
+        MainLoop;  # Keep window open until user closes it
+    }
+}
+
+#=============================================================================
+# CLEANUP
+#=============================================================================
+
+# Close log file if it was opened
+if ($log_fh) {
+    close($log_fh);
+    append_output("\nLog written to: $log_file\n");
 }
 
 #=============================================================================
@@ -879,14 +980,14 @@ B<Note:> The -o+ flag tells unrar to overwrite existing files without prompting.
 
 sub run_unrar_with_output {
     my ($rar_path, $dest_dir) = @_;
-    
+    print "Line 883 run_unrar_with_output: Extracting '$rar_path' to '$dest_dir'\n";
     # Shell-escape paths for safe command execution
     my $escaped_rar = shell_escape($rar_path);
     my $escaped_dest = shell_escape($dest_dir);
-    
+    print "$escaped_dest\n";
     # Build command: x=extract with paths, -o+=overwrite, redirect stderr to stdout
     my $cmd = "unrar x -o+ $escaped_rar $escaped_dest 2>&1";
-    
+    print "LINE 890 $cmd\n\n\n";
     # Open pipe to read unrar output in realtime
     my $pid = open(my $unrar_fh, '-|', $cmd);
     
@@ -959,6 +1060,7 @@ B<Returns:> 1 on success, 0 on failure
 
 sub extract_rar { 
     my ($dir, $dest_dir) = @_;
+    print "dir=> $dir\tdest_dir=> $dest_dir\n";
     $dest_dir //= $dir;  # Default to in-place extraction
     
     # Validate source directory
@@ -1001,6 +1103,7 @@ sub extract_rar {
     }
 
     # Run unrar with realtime output capture (paths are escaped inside the function)
+    print "Line 1006 $full_rar_path => $full_rar_path => $dest_dir/\n";
     my $exit_code = run_unrar_with_output($full_rar_path, "$dest_dir/");
 
     if ($exit_code == 0) {
@@ -1037,95 +1140,4 @@ sub extract_rar {
         log_entry($dir, $rar_file, $dest_dir, 'extract', 'failed', "unrar exit code: $exit_code");
         return 0;
     }
-}
-
-#=============================================================================
-# MAIN PROGRAM EXECUTION
-#=============================================================================
-
-# Scan for directories containing split RAR archives
-my @dirs = iterate_movies($root_dir);
-
-if (@dirs == 0) {
-    # No archives found - inform user and exit
-    print "No RAR archives found in '$root_dir'\n";
-    log_entry($root_dir, '', '', 'scan', 'complete', 'No archives found');
-    
-    if ($gui) {
-        # Show message dialog in GUI mode
-        my $msg_win = MainWindow->new;
-        $msg_win->title("Mass RAR Extractor - Complete");
-        $msg_win->Label(
-            -text => "No RAR archives found in:\n$root_dir",
-            -justify => 'center'
-        )->pack(-padx => 20, -pady => 15);
-        $msg_win->Button(
-            -text => "OK",
-            -width => 10,
-            -command => sub { $msg_win->destroy(); }
-        )->pack(-pady => 10);
-        $msg_win->update();
-        MainLoop;
-    }
-} else {
-    # Archives found - process each directory
-    $total_dirs = scalar(@dirs);
-    append_output("Found $total_dirs directories with RAR archives.\n");
-    
-    # Create progress window for GUI mode
-    if ($gui) {
-        create_progress_window();
-    }
-    
-    # Process each directory containing archives
-    $current_dir_index = 0;
-    foreach my $source_dir (@dirs) {
-        my $dest_dir;
-        
-        # Determine destination directory
-        # If output_dir specified, preserve relative path structure
-        if ($output_dir) {
-            my $relative = $source_dir;
-            $relative =~ s/^\Q$root_dir\E\/?//;  # Remove root prefix
-            $dest_dir = $relative ? "$output_dir/$relative" : $output_dir;
-        } else {
-            # Extract in place
-            $dest_dir = $source_dir;
-        }
-        
-        # Update progress bar with current directory info
-        my $percent = ($current_dir_index / $total_dirs) * 100;
-        update_progress("Processing ($current_dir_index/$total_dirs): " . basename($source_dir), $percent);
-        
-        append_output("\nProcessing: $source_dir\n");
-        append_output("  -> Extracting to: $dest_dir\n");
-        
-        # Perform extraction and report result
-        if (extract_rar($source_dir, $dest_dir)) {
-            append_output("  -> Extraction SUCCESS\n");
-        } else {
-            append_output("  -> Extraction FAILED\n");
-        }
-        
-        $current_dir_index++;
-    }
-    
-    # Update progress to 100% when complete
-    update_progress("Extraction complete!", 100);
-    
-    # Enable close button and wait for user to close the window
-    if ($gui && $progress_window) {
-        enable_close_button();
-        MainLoop;  # Keep window open until user closes it
-    }
-}
-
-#=============================================================================
-# CLEANUP
-#=============================================================================
-
-# Close log file if it was opened
-if ($log_fh) {
-    close($log_fh);
-    append_output("\nLog written to: $log_file\n");
 }
